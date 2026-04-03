@@ -2,153 +2,100 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
+import os
 from datetime import date
 
 # --- 1. പേജ് സെറ്റപ്പ് ---
-st.set_page_config(page_title="Habeeb's Pro Analyzer V16", layout="wide")
+st.set_page_config(page_title="Habeeb's Pro Analyzer V4", layout="wide")
 
-# --- 2. സെഷൻ സ്റ്റേറ്റ് (ഡാറ്റ നിലനിർത്താൻ) ---
-if 'portfolio_df' not in st.session_state:
-    st.session_state.portfolio_df = pd.DataFrame(columns=['Ticker', 'Buy Date', 'Qty', 'Avg Price'])
-if 'sales_df' not in st.session_state:
-    st.session_state.sales_df = pd.DataFrame(columns=['Ticker', 'Sell Date', 'Qty', 'Sell Price', 'Profit/Loss'])
+# ഫയൽ പാത്തുകൾ
+PORTFOLIO_FILE = "my_portfolio.csv"
 
-# --- 3. ഇൻഡക്സുകൾ ലോഡ് ചെയ്യുന്ന ഫംഗ്‌ഷൻ ---
-@st.cache_data(ttl=86400)
-def get_index_stocks(index_name):
-    indices = {
-        "Nifty 50": "https://archives.nseindia.com/content/indices/ind_nifty50list.csv",
-        "Nifty Next 50": "https://archives.nseindia.com/content/indices/ind_niftynext50list.csv",
-        "Nifty 500": "https://archives.nseindia.com/content/indices/ind_nifty500list.csv"
-    }
-    try:
-        url = indices.get(index_name)
-        df = pd.read_csv(url)
-        col = 'Symbol' if 'Symbol' in df.columns else df.columns[0]
-        return df[col].str.strip().tolist()
-    except:
-        return ["RELIANCE", "TCS", "HDFCBANK", "INFY"]
+# --- 2. ഡാറ്റ ലോഡിംഗ് ഫംഗ്‌ഷൻ ---
+def load_data():
+    if os.path.exists(PORTFOLIO_FILE):
+        return pd.read_csv(PORTFOLIO_FILE)
+    return pd.DataFrame(columns=['Ticker', 'Buy Date', 'Qty', 'Avg Price'])
 
-# --- 4. അനാലിസിസ് ലോജിക് ---
+# --- 3. അനാലിസിസ് ലോജിക് (EMA + RSI) ---
 def analyze_stock(ticker, f_p, s_p, rsi_val):
     try:
-        yf_ticker = str(ticker).strip() + ".NS"
+        yf_ticker = str(ticker).strip().upper() + ".NS"
         df = yf.download(yf_ticker, period="1y", interval="1d", progress=False, auto_adjust=True)
         if df.empty or len(df) < s_p: return None
         if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
         
         close = df['Close'].astype(float)
-        ema_f = close.ewm(span=f_p, adjust=False).mean()
-        ema_s = close.ewm(span=s_p, adjust=False).mean()
+        ema_f = close.ewm(span=f_p, adjust=False).mean().iloc[-1]
+        ema_s = close.ewm(span=s_p, adjust=False).mean().iloc[-1]
         
         delta = close.diff()
         gain = delta.clip(lower=0).ewm(alpha=1/14, adjust=False).mean()
         loss = (-1 * delta.clip(upper=0)).ewm(alpha=1/14, adjust=False).mean()
-        rsi = 100 - (100 / (1 + (gain / loss.replace(0, np.nan))))
+        rsi = 100 - (100 / (1 + (gain / loss.replace(0, np.nan)))).iloc[-1]
         
-        curr_price = float(close.iloc[-1])
-        curr_rsi = float(rsi.iloc[-1])
-        
-        if curr_price > ema_f.iloc[-1] and ema_f.iloc[-1] > ema_s.iloc[-1] and curr_rsi > rsi_val:
-            sig = "✅ BUY"
-        elif curr_price < ema_s.iloc[-1]:
-            sig = "⚠️ EXIT"
-        else:
-            sig = "⏳ WAIT"
+        curr_p = float(close.iloc[-1])
+        sig = "⏳ WAIT"
+        if curr_p > ema_f and ema_f > ema_s and rsi > rsi_val: sig = "✅ BUY"
+        elif curr_p < ema_s: sig = "⚠️ EXIT"
             
-        return {"LTP": round(curr_price, 2), "RSI": round(curr_rsi, 1), "Signal": sig}
+        return {"LTP": round(curr_p, 2), "RSI": round(rsi, 1), "Signal": sig}
     except: return None
 
-# --- 5. മെയിൻ ഇന്റർഫേസ് ---
+# --- 4. മെയിൻ ഇന്റർഫേസ് ---
 def main():
-    st.title("📈 Habeeb's Pro Analyzer V16")
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(["🔍 Scan", "➕ Add", "🤝 Sell", "💰 Portfolio", "📂 Data"])
+    st.title("📈 Habeeb's Pro Analyzer V4 (Updated)")
 
-    st.sidebar.header("⚙️ Settings")
+    # സൈഡ്‌ബാർ സെറ്റിംഗ്‌സ്
+    st.sidebar.header("⚙️ Strategy Settings")
     f_p = st.sidebar.number_input("Fast EMA", value=50)
     s_p = st.sidebar.number_input("Slow EMA", value=200)
     rsi_v = st.sidebar.slider("Min RSI", 20, 80, 45)
 
-    # TAB 1: SCAN
+    # ടാബുകൾ
+    tab1, tab2, tab3 = st.tabs(["📊 Dashboard & Search", "🔍 Full Scan", "🛒 Trade Manager"])
+
+    # --- TAB 1: DASHBOARD & QUICK SEARCH ---
     with tab1:
-        idx_choice = st.selectbox("Select Index", ["Nifty 50", "Nifty Next 50", "Nifty 500"])
-        stock_list = get_index_stocks(idx_choice)
-        if st.button(f"Scan {len(stock_list)} Stocks"):
-            results = []
-            bar = st.progress(0)
-            table = st.empty()
-            for i, tkr in enumerate(stock_list):
-                res = analyze_stock(tkr, f_p, s_p, rsi_v)
-                if res:
-                    res['Ticker'] = tkr
-                    results.append(res)
-                    table.dataframe(pd.DataFrame(results), use_container_width=True)
-                bar.progress((i+1)/len(stock_list))
-
-    # TAB 2: ADD
-    with tab2:
-        c1, c2, c3, c4 = st.columns(4)
-        t_n = c1.text_input("Ticker").upper()
-        t_d = c2.date_input("Buy Date", date.today())
-        t_q = c3.number_input("Qty", min_value=1, key="add_qty")
-        t_p = c4.number_input("Price", min_value=0.1, key="add_prc")
-        if st.button("Save Buy"):
-            new = pd.DataFrame([[t_n, t_d, t_q, t_p]], columns=['Ticker', 'Buy Date', 'Qty', 'Avg Price'])
-            st.session_state.portfolio_df = pd.concat([st.session_state.portfolio_df, new]).reset_index(drop=True)
-            st.success("Added!")
-
-    # TAB 3: SELL (New Feature)
-    with tab3:
-        st.subheader("Sell Your Stock")
-        if not st.session_state.portfolio_df.empty:
-            df_p = st.session_state.portfolio_df
-            sel_tkr = st.selectbox("വിറ്റ സ്റ്റോക്ക് ഏതാണ്?", df_p['Ticker'].unique())
-            
-            # കണ്ടുപിടിക്കുന്നു (Current Data)
-            stock_info = df_p[df_p['Ticker'] == sel_tkr].iloc[0]
-            
-            c1, c2, c3 = st.columns(3)
-            s_date = c1.date_input("Sell Date", date.today())
-            s_qty = c2.number_input("Sell Qty", min_value=1, max_value=int(stock_info['Qty']))
-            s_price = c3.number_input("Sell Price", min_value=0.1)
-            
-            if st.button("Confirm Sell"):
-                buy_price = stock_info['Avg Price']
-                profit = (s_price - buy_price) * s_qty
-                
-                # Sales ലോഗിലേക്ക് മാറ്റുന്നു
-                new_sale = pd.DataFrame([[sel_tkr, s_date, s_qty, s_price, profit]], 
-                                        columns=['Ticker', 'Sell Date', 'Qty', 'Sell Price', 'Profit/Loss'])
-                st.session_state.sales_df = pd.concat([st.session_state.sales_df, new_sale]).reset_index(drop=True)
-                
-                # പോർട്ട്‌ഫോളിയോയിൽ നിന്ന് ക്വാണ്ടിറ്റി കുറയ്ക്കുന്നു
-                if s_qty == stock_info['Qty']:
-                    st.session_state.portfolio_df = df_p[df_p['Ticker'] != sel_tkr].reset_index(drop=True)
-                else:
-                    st.session_state.portfolio_df.loc[df_p['Ticker'] == sel_tkr, 'Qty'] -= s_qty
-                
-                st.success(f"Sold! Profit/Loss: ₹{round(profit, 2)}")
-                st.rerun()
-        else:
-            st.info("വിൽക്കാൻ സ്റ്റോക്കുകൾ ഒന്നുമില്ല.")
-
-    # TAB 4: PORTFOLIO & SALES REPORT
-    with tab4:
-        st.subheader("Current Portfolio")
-        st.dataframe(st.session_state.portfolio_df, use_container_width=True)
+        st.subheader("🔎 Quick Stock Check")
+        q_search = st.text_input("സ്റ്റോക്ക് പേര് ടൈപ്പ് ചെയ്യുക (eg: SBIN, RELIANCE)", "").upper()
+        if q_search:
+            res = analyze_stock(q_search, f_p, s_p, rsi_v)
+            if res:
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Current Price", f"₹{res['LTP']}")
+                c2.metric("RSI", res['RSI'])
+                c3.subheader(f"Signal: {res['Signal']}")
+            else: st.error("ഡാറ്റ ലഭ്യമല്ല. പേര് ശരിയാണോ എന്ന് നോക്കൂ.")
         
         st.divider()
-        st.subheader("Realized Profit/Loss (വിറ്റ സ്റ്റോക്കുകൾ)")
-        if not st.session_state.sales_df.empty:
-            st.dataframe(st.session_state.sales_df, use_container_width=True)
-            st.metric("Total Realized Profit", f"₹{round(st.session_state.sales_df['Profit/Loss'].sum(), 2)}")
-        else:
-            st.write("വിൽപന ഒന്നും നടന്നിട്ടില്ല.")
+        st.subheader("Your Current Holdings")
+        df_p = load_data()
+        if not df_p.empty:
+            st.dataframe(df_p, use_container_width=True)
+        else: st.info("പോർട്ട്‌ഫോളിയോ കാലിയാണ്.")
 
-    # TAB 5: DATA
-    with tab5:
-        st.download_button("Download Portfolio", st.session_state.portfolio_df.to_csv(index=False).encode('utf-8'), "port.csv")
-        st.download_button("Download Sales Report", st.session_state.sales_df.to_csv(index=False).encode('utf-8'), "sales.csv")
+    # --- TAB 2: FULL SCAN ---
+    with tab2:
+        st.subheader("Market Scan")
+        index_choice = st.selectbox("Select Index", ["Nifty 50", "Nifty 100", "Nifty 500"])
+        # (സ്കാനിംഗ് ലോജിക് ഇവിടെ തുടരും...)
+        st.info("ഇൻഡക്സ് തിരഞ്ഞെടുത്ത് സ്കാൻ ബട്ടൺ അമർത്തുക.")
+
+    # --- TAB 3: TRADE MANAGER ---
+    with tab3:
+        st.subheader("Add Stock to Portfolio")
+        with st.form("buy_form", clear_on_submit=True):
+            bn = st.text_input("Ticker Name").upper()
+            bq = st.number_input("Quantity", min_value=1)
+            bp = st.number_input("Average Price", min_value=1.0)
+            if st.form_submit_button("Save to Portfolio"):
+                df_p = load_data()
+                new_row = pd.DataFrame([[bn, str(date.today()), bq, bp]], columns=['Ticker', 'Buy Date', 'Qty', 'Avg Price'])
+                updated_df = pd.concat([df_p, new_row], ignore_index=True)
+                updated_df.to_csv(PORTFOLIO_FILE, index=False)
+                st.success(f"{bn} സേവ് ചെയ്തു!")
+                st.rerun()
 
 if __name__ == "__main__":
     main()
