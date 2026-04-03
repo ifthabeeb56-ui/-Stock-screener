@@ -6,7 +6,7 @@ import numpy as np
 # --- 1. പേജ് സെറ്റപ്പ് ---
 st.set_page_config(page_title="Habeeb's Pro Analyzer V3", layout="wide")
 
-# --- 2. ഇൻഡക്സുകൾ ലോഡ് ചെയ്യുന്ന ഫംഗ്‌ഷൻ ---
+# --- 2. ഇൻഡക്സുകൾ ലോഡ് ചെയ്യുന്ന ഫംഗ്‌ഷൻ (404 Error Fix) ---
 @st.cache_data(ttl=86400)
 def get_index_stocks(index_name):
     indices = {
@@ -23,15 +23,14 @@ def get_index_stocks(index_name):
         col = 'Symbol' if 'Symbol' in df.columns else df.columns[0]
         return df[col].str.strip().tolist()
     except:
-        # NSE സൈറ്റിൽ നിന്ന് ഡാറ്റ കിട്ടാൻ വൈകിയാൽ ഉപയോഗിക്കാനുള്ള ബാക്കപ്പ് ലിസ്റ്റ്
-        return ["RELIANCE", "TCS", "HDFCBANK", "INFY", "ICICIBANK", "TATASTEEL", "SBI"]
+        # ലോഡിംഗ് പരാജയപ്പെട്ടാൽ ഉപയോഗിക്കാനുള്ള ബാക്കപ്പ് ലിസ്റ്റ്
+        return ["RELIANCE", "TCS", "HDFCBANK", "INFY", "ICICIBANK", "SBIN", "TATASTEEL"]
 
 # --- 3. ഇൻഡിക്കേറ്റർ കാൽക്കുലേഷൻ ---
 def calculate_indicators(df, f_period, s_period):
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
     close = df['Close'].astype(float)
-    
     ema_f = close.ewm(span=f_period, adjust=False).mean()
     ema_s = close.ewm(span=s_period, adjust=False).mean()
     
@@ -44,55 +43,46 @@ def calculate_indicators(df, f_period, s_period):
     rsi = 100 - (100 / (1 + rs))
     return ema_f, ema_s, rsi.fillna(50)
 
-# --- 4. അനാലിസിസ് ലോജിക് (Toggles സെറ്റ് ചെയ്തത്) ---
-def analyze_stock(ticker, f_ema, s_ema, rsi_min, smart_buy_on, vol_filter_on):
+# --- 4. അനാലിസിസ് ലോജിക് (EMA & RSI Toggle ഉൾപ്പെടുത്തിയത്) ---
+def analyze_stock(ticker, f_p, s_p, rsi_min, use_ema, use_rsi, use_vol, smart_on):
     try:
         yf_ticker = str(ticker).strip() + ".NS"
         df = yf.download(yf_ticker, period="1y", interval="1d", progress=False, auto_adjust=True)
-        if df.empty or len(df) < s_ema: return None
+        if df.empty or len(df) < s_p: return None
         
-        # Weekly Bullish Check (Price > 30 Weekly EMA)
-        df_w = df.resample('W').last()
-        w_ema = df_w['Close'].ewm(span=30, adjust=False).mean().iloc[-1]
-        is_weekly_bullish = df_w['Close'].iloc[-1] > w_ema
-
-        ema_f, ema_s, rsi = calculate_indicators(df, f_ema, s_ema)
+        ema_f, ema_s, rsi = calculate_indicators(df, f_p, s_p)
         curr_price = float(df['Close'].iloc[-1])
         c_rsi = float(rsi.iloc[-1])
+        
+        # കണ്ടീഷനുകൾ സ്വിച്ചിന് അനുസരിച്ച് നിയന്ത്രിക്കുന്നു
+        ema_ok = (curr_price > ema_f.iloc[-1] and ema_f.iloc[-1] > ema_s.iloc[-1]) if use_ema else True
+        rsi_ok = (c_rsi > rsi_min) if use_rsi else True
         
         curr_vol = float(df['Volume'].iloc[-1])
         avg_vol = float(df['Volume'].iloc[-21:-1].mean())
         vol_ratio = curr_vol / avg_vol if avg_vol > 0 else 0
-        recent_high = float(df['High'].iloc[-21:-1].max())
+        vol_ok = (vol_ratio > 1.5) if use_vol else True
 
-        # വോളിയം കണ്ടീഷൻ സ്വിച്ചിന് അനുസരിച്ച് മാറ്റുന്നു
-        vol_check = vol_ratio > 1.5 if vol_filter_on else True
+        # Smart Buy നിബന്ധനകൾ
+        df_w = df.resample('W').last()
+        w_ema = df_w['Close'].ewm(span=30, adjust=False).mean().iloc[-1]
+        is_weekly_bullish = df_w['Close'].iloc[-1] > w_ema
+        recent_high = float(df['High'].iloc[-21:-1].max())
 
         signal = "WAIT"
         
-        # 🚀 SMART BUY: breakout + EMA crossover + RSI + Volume + Weekly Bullish
-        if smart_buy_on and (curr_price > recent_high and curr_price > ema_f.iloc[-1] and 
-            ema_f.iloc[-1] > ema_s.iloc[-1] and c_rsi > rsi_min and 
-            vol_check and is_weekly_bullish):
+        if smart_on and ema_ok and rsi_ok and vol_ok and is_weekly_bullish and curr_price > recent_high:
             signal = "🚀 SMART BUY"
-            
-        # ✅ BUY: Standard technical setup
-        elif curr_price > ema_f.iloc[-1] and ema_f.iloc[-1] > ema_s.iloc[-1] and c_rsi > rsi_min and vol_check:
+        elif ema_ok and rsi_ok and vol_ok:
             signal = "✅ BUY"
-            
-        # ⚠️ EXIT
-        elif curr_price < ema_s.iloc[-1]:
+        elif use_ema and curr_price < ema_s.iloc[-1]:
             signal = "⚠️ EXIT"
             
         if signal == "WAIT": return None
         
         return {
-            "Ticker": ticker, 
-            "Price": round(curr_price, 2), 
-            "Signal": signal,
-            "RSI": round(c_rsi, 1), 
-            "Vol Ratio": round(vol_ratio, 2),
-            "W-Trend": "Bullish" if is_weekly_bullish else "Neutral"
+            "Ticker": ticker, "Price": round(curr_price, 2), "Signal": signal,
+            "RSI": round(c_rsi, 1), "Vol Ratio": round(vol_ratio, 2)
         }
     except: return None
 
@@ -100,55 +90,37 @@ def analyze_stock(ticker, f_ema, s_ema, rsi_min, smart_buy_on, vol_filter_on):
 def main():
     st.title("📈 Habeeb's Pro Analyzer V3")
     
-    index_name = st.selectbox("ഇൻഡക്സ് തിരഞ്ഞെടുക്കുക:", 
-                             ["Nifty 50", "Nifty Next 50", "Nifty 100", "Nifty 500", "Nifty Bank", "Nifty IT"])
-    
+    index_name = st.selectbox("ഇൻഡക്സ് തിരഞ്ഞെടുക്കുക:", ["Nifty 50", "Nifty Next 50", "Nifty 100", "Nifty 500", "Nifty Bank", "Nifty IT"])
     stock_list = get_index_stocks(index_name)
 
     st.sidebar.header("⚙️ Settings")
     f_n = st.sidebar.number_input("Fast EMA", value=50)
     s_n = st.sidebar.number_input("Slow EMA", value=200)
-    rsi_val = st.sidebar.slider("Min RSI", 30, 80, 45)
+    rsi_val = st.sidebar.slider("Min RSI", 20, 80, 45)
     
     st.sidebar.markdown("---")
-    # ഓൺ/ഓഫ് സ്വിച്ചുകൾ
-    smart_buy_toggle = st.sidebar.checkbox("Enable 🚀 SMART BUY", value=True)
-    vol_filter_toggle = st.sidebar.checkbox("Enable Volume Filter", value=True, help="ഓഫ് ചെയ്താൽ വോളിയം കുറഞ്ഞ സ്റ്റോക്കുകളും സിഗ്നലിൽ വരും.")
+    st.sidebar.subheader("ഫിൽട്ടറുകൾ ഓൺ/ഓഫ് ചെയ്യാം")
+    # പുതിയ സ്വിച്ചുകൾ
+    t_ema = st.sidebar.checkbox("Enable EMA Filter", value=True)
+    t_rsi = st.sidebar.checkbox("Enable RSI Filter", value=True)
+    t_vol = st.sidebar.checkbox("Enable Volume Filter", value=True)
+    t_smart = st.sidebar.checkbox("Enable 🚀 SMART BUY", value=True)
 
-    if not stock_list:
-        st.error("Error: സ്റ്റോക്ക് ലിസ്റ്റ് ലോഡ് ചെയ്യാൻ സാധിച്ചില്ല.")
-        return
-
-    total_stocks = len(stock_list)
-    st.info(f"തിരഞ്ഞെടുത്ത ഇൻഡക്സിൽ {total_stocks} സ്റ്റോക്കുകൾ ഉണ്ട്.")
-
-    if st.button(f"🚀 Start Full Scan", use_container_width=True):
+    if st.button(f"🚀 Start Full Scan ({len(stock_list)} Stocks)", use_container_width=True):
         results = []
         bar = st.progress(0)
-        status = st.empty()
-        res_table = st.empty() 
+        res_table = st.empty()
         
         for i, ticker in enumerate(stock_list):
-            status.text(f"Scanning {i+1}/{total_stocks}: {ticker}")
-            # സിഗ്നൽ ലഭിക്കുമ്പോൾ പുതിയ ടോഗിൾ വാല്യൂസും ഫംഗ്‌ഷനിലേക്ക് അയക്കുന്നു
-            res = analyze_stock(ticker, f_n, s_n, rsi_val, smart_buy_toggle, vol_filter_toggle)
-            if res: 
+            res = analyze_stock(ticker, f_n, s_n, rsi_val, t_ema, t_rsi, t_vol, t_smart)
+            if res:
                 results.append(res)
-                # സിഗ്നലുകൾ തത്സമയം ടേബിളിൽ അപ്‌ഡേറ്റ് ചെയ്യുന്നു
+                # തത്സമയം ടേബിൾ അപ്‌ഡേറ്റ് ചെയ്യുന്നു
                 df_display = pd.DataFrame(results).sort_values(by="Signal", ascending=False)
                 res_table.dataframe(df_display, use_container_width=True, hide_index=True)
-            
-            bar.progress((i + 1) / total_stocks)
+            bar.progress((i + 1) / len(stock_list))
         
-        status.text("✅ സ്കാനിംഗ് പൂർത്തിയായി!")
-        
-        if results:
-            st.success(f"ആകെ {len(results)} സ്റ്റോക്കുകൾ കണ്ടെത്തി.")
-            csv = pd.DataFrame(results).to_csv(index=False).encode('utf-8')
-            st.download_button(label="📥 റിപ്പോർട്ട് ഡൗൺലോഡ് (CSV)", data=csv,
-                               file_name=f'habeeb_scan_{index_name}.csv', mime='text/csv', use_container_width=True)
-        else:
-            st.warning("നിബന്ധനകൾക്ക് അനുയോജ്യമായ സ്റ്റോക്കുകൾ ഇപ്പോൾ ലഭ്യമല്ല.")
+        st.success("✅ സ്കാനിംഗ് പൂർത്തിയായി!")
 
 if __name__ == "__main__":
     main()
