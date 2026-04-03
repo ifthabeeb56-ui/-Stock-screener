@@ -5,7 +5,7 @@ import numpy as np
 from datetime import datetime
 
 # --- 1. പേജ് സെറ്റപ്പ് ---
-st.set_page_config(page_title="HRC Pro Analyzer V6.7", layout="wide")
+st.set_page_config(page_title="HRC Pro Analyzer V6.8", layout="wide")
 
 if 'watchlist' not in st.session_state:
     st.session_state.watchlist = []
@@ -136,7 +136,7 @@ def analyze_channel(ticker, period=40):
 
 # --- 6. മെയിൻ ഇന്റർഫേസ് ---
 def main():
-    st.title("📈 HRC Pro Analyzer V6.7")
+    st.title("📈 HRC Pro Analyzer V6.8")
     
     st.sidebar.header("⚙️ General Settings")
     f_n = st.sidebar.number_input("Fast EMA", value=50)
@@ -154,44 +154,4 @@ def main():
     
     with tab1:
         idx = st.selectbox("Select Index:", ["Nifty 50", "Nifty Next 50", "Nifty 100", "Nifty 500"])
-        if st.button(f"Scan {idx}", use_container_width=True):
-            run_general_scanner(get_index_stocks(idx), f_n, s_n, rsi_val, t_ema, t_rsi, t_vol, t_adx, t_smart)
-
-    with tab2:
-        idx_ch = st.selectbox("Select Index for Channel Scan:", ["Nifty 50", "Nifty Next 50", "Nifty 100", "Nifty 500"], key="ch_idx")
-        lookback = st.slider("Channel Period", 10, 100, 40)
-        if st.button("Start Channel Scan", use_container_width=True):
-            run_channel_scanner(get_index_stocks(idx_ch), lookback)
-
-    with tab3:
-        p_in = st.text_area("Symbols (SBIN, RELIANCE...):", height=80)
-        combined = list(set([s.strip().upper() for s in p_in.split(",") if s.strip()] + st.session_state.watchlist))
-        if st.button("Analyze Portfolio", use_container_width=True):
-            run_general_scanner(combined, f_n, s_n, rsi_val, t_ema, t_rsi, t_vol, t_adx, t_smart)
-
-def run_general_scanner(stocks, f_n, s_n, rsi_val, t_ema, t_rsi, t_vol, t_adx, t_smart):
-    results = []
-    bar = st.progress(0)
-    for i, t in enumerate(stocks):
-        res = analyze_stock(t, f_n, s_n, rsi_val, t_ema, t_rsi, t_vol, t_adx, t_smart)
-        if res: results.append(res)
-        bar.progress((i + 1) / len(stocks))
-    if results:
-        df = pd.DataFrame(results)
-        st.dataframe(df, use_container_width=True, hide_index=True)
-    else: st.warning("No data found.")
-
-def run_channel_scanner(stocks, lookback):
-    results = []
-    bar = st.progress(0)
-    for i, t in enumerate(stocks):
-        res = analyze_channel(t, lookback)
-        if res: results.append(res)
-        bar.progress((i + 1) / len(stocks))
-    if results:
-        df = pd.DataFrame(results)
-        st.dataframe(df, use_container_width=True)
-    else: st.warning("No data found.")
-
-if __name__ == "__main__":
-    main()
+        if st.button(
