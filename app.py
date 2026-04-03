@@ -6,7 +6,7 @@ import numpy as np
 # --- 1. പേജ് സെറ്റപ്പ് ---
 st.set_page_config(page_title="Habeeb's Pro Analyzer V3", layout="wide")
 
-# --- 2. ഇൻഡക്സുകൾ ലോഡ് ചെയ്യുന്ന ഫംഗ്‌ഷൻ ---
+# --- 2. ഇൻഡക്സുകൾ ലൈവ് ആയി ലോഡ് ചെയ്യുന്ന ഫംഗ്‌ഷൻ ---
 @st.cache_data(ttl=86400)
 def get_index_stocks(index_name):
     indices = {
@@ -63,7 +63,7 @@ def analyze_stock(ticker, f_ema, s_ema, rsi_min):
         curr_price = float(df['Close'].iloc[-1])
         c_rsi = float(rsi.iloc[-1])
         
-        # Volume & Breakout Logic
+        # Volume & Breakout
         curr_vol = float(df['Volume'].iloc[-1])
         avg_vol = float(df['Volume'].iloc[-21:-1].mean())
         recent_high = float(df['High'].iloc[-21:-1].max())
@@ -93,7 +93,6 @@ def analyze_stock(ticker, f_ema, s_ema, rsi_min):
 # --- 5. മെയിൻ ഇന്റർഫേസ് ---
 def main():
     st.title("📈 Habeeb's Pro Analyzer V3")
-    st.info("തിരഞ്ഞെടുത്ത ഇൻഡക്സിലെ സ്റ്റോക്കുകൾ ലൈവ് ആയി സ്കാൻ ചെയ്ത് മികച്ച അവസരങ്ങൾ കണ്ടെത്തുന്നു.")
     
     index_name = st.selectbox("സ്കാൻ ചെയ്യേണ്ട ഇൻഡക്സ് തിരഞ്ഞെടുക്കുക:", 
                              ["Nifty 50", "Nifty Next 50", "Nifty 100", "Nifty 500", "Nifty Bank", "Nifty IT"])
@@ -109,8 +108,10 @@ def main():
         st.error("ഇൻഡക്സ് ലിസ്റ്റ് ലോഡ് ചെയ്യാൻ കഴിഞ്ഞില്ല!")
         return
 
+    # --- ഇവിടെയാണ് 500 സ്റ്റോക്ക് സെറ്റ് ചെയ്യുന്നത് ---
     max_limit = len(stock_list)
-    scan_limit = st.sidebar.slider("എത്ര സ്റ്റോക്കുകൾ സ്കാൻ ചെയ്യണം?", 1, max_limit, min(50, max_limit))
+    # default ആയി 50 എണ്ണം സെറ്റ് ചെയ്തിരിക്കുന്നു, നിങ്ങൾക്ക് സ്ലൈഡർ നീക്കി 500 ആക്കാം
+    scan_limit = st.sidebar.slider("എത്ര സ്റ്റോക്കുകൾ സ്കാൻ ചെയ്യണം?", 1, max_limit, max_limit)
 
     if st.button("🚀 Start Scanning", use_container_width=True):
         results = []
@@ -128,7 +129,6 @@ def main():
             df_final = pd.DataFrame(results).sort_values(by="Signal", ascending=False)
             st.success(f"പൂർത്തിയായി! {len(df_final)} സ്റ്റോക്കുകൾ കണ്ടെത്തി.")
             
-            # കളർ കോഡിംഗ്
             def color_row(val):
                 if "SMART" in str(val): return 'background-color: #d4edda; color: #155724; font-weight: bold'
                 if "EXIT" in str(val): return 'background-color: #f8d7da; color: #721c24'
@@ -136,7 +136,7 @@ def main():
             
             st.dataframe(df_final.style.map(color_row, subset=['Signal']), use_container_width=True, hide_index=True)
             
-            # --- ഡൗൺലോഡ് ബട്ടൺ (പുതിയതായി ചേർത്തത്) ---
+            # --- CSV ഡൗൺലോഡ് ബട്ടൺ ---
             st.markdown("---")
             csv = df_final.to_csv(index=False).encode('utf-8')
             st.download_button(
