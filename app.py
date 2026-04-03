@@ -24,30 +24,27 @@ def get_index_stocks(index_name):
         col = 'Symbol' if 'Symbol' in df.columns else df.columns[0]
         return df[col].str.strip().tolist()
     except:
-        # URL ലഭ്യമല്ലെങ്കിൽ ബാക്കപ്പ് ലിസ്റ്റ്
         return ["RELIANCE", "TCS", "HDFCBANK", "INFY", "ICICIBANK", "AXISBANK", "SBIN"]
 
 # --- 3. അനാലിസിസ് ലോജിക് ---
 def analyze_stock(ticker, f_p, s_p, rsi_min, use_ema, use_rsi, use_vol, smart_on):
     try:
         yf_ticker = str(ticker).strip().upper() + ".NS"
-        # 1 വർഷത്തെ ഡാറ്റ എടുക്കുന്നു
         df = yf.download(yf_ticker, period="1y", interval="1d", progress=False, auto_adjust=True)
         
         if df.empty or len(df) < s_p: 
             return None
         
-        # MultiIndex കോളങ്ങൾ ഉണ്ടെങ്കിൽ മാറ്റുന്നു
         if isinstance(df.columns, pd.MultiIndex): 
             df.columns = df.columns.get_level_values(0)
         
         close = df['Close'].astype(float)
         
-        # EMA കണക്കാക്കുന്നു
+        # EMA Calculations
         ema_f = close.ewm(span=f_p, adjust=False).mean()
         ema_s = close.ewm(span=s_p, adjust=False).mean()
         
-        # RSI കണക്കാക്കുന്നു
+        # RSI Calculations
         delta = close.diff()
         gain = delta.clip(lower=0).ewm(alpha=1/14, adjust=False).mean()
         loss = (-1 * delta.clip(upper=0)).ewm(alpha=1/14, adjust=False).mean()
@@ -56,11 +53,11 @@ def analyze_stock(ticker, f_p, s_p, rsi_min, use_ema, use_rsi, use_vol, smart_on
         curr_p = float(close.iloc[-1])
         c_rsi = float(rsi.iloc[-1])
         
-        # കണ്ടീഷനുകൾ പരിശോധിക്കുന്നു
+        # Conditions
         ema_ok = (curr_p > ema_f.iloc[-1] and ema_f.iloc[-1] > ema_s.iloc[-1]) if use_ema else True
         rsi_ok = (c_rsi > rsi_min) if use_rsi else True
         
-        # വോളിയം പരിശോധന
+        # Volume Check
         curr_vol = float(df['Volume'].iloc[-1])
         avg_vol = float(df['Volume'].iloc[-21:-1].mean())
         vol_ratio = curr_vol / avg_vol if avg_vol > 0 else 0
@@ -68,7 +65,6 @@ def analyze_stock(ticker, f_p, s_p, rsi_min, use_ema, use_rsi, use_vol, smart_on
 
         signal = "WAIT"
         if ema_ok and rsi_ok and vol_ok:
-            # 20 ദിവസത്തെ ഹൈ പരിശോധിക്കുന്നു
             recent_high = float(df['High'].iloc[-21:-1].max())
             if smart_on and curr_p > recent_high:
                 signal = "🚀 SMART BUY"
@@ -87,6 +83,7 @@ def analyze_stock(ticker, f_p, s_p, rsi_min, use_ema, use_rsi, use_vol, smart_on
     except: 
         return None
 
+# സിഗ്നലിന് നിറം നൽകാനുള്ള ഫംഗ്‌ഷൻ
 def style_signal(val):
     if "BUY" in str(val): return 'color: #28a745; font-weight: bold'
     if "EXIT" in str(val): return 'color: #dc3545; font-weight: bold'
@@ -96,10 +93,9 @@ def style_signal(val):
 def main():
     st.title("📈 HRC Pro Analyzer V5")
 
-    # സൈഡ്‌ബാർ സെറ്റിംഗ്‌സ്
     st.sidebar.header("⚙️ Settings")
-    f_n = st.sidebar.number_input("Fast EMA", value=50)
-    s_n = st.sidebar.number_input("Slow EMA", value=200)
+    f_n = st.sidebar.number_input("Fast EMA (eg: 50)", value=50)
+    s_n = st.sidebar.number_input("Slow EMA (eg: 200)", value=200)
     rsi_val = st.sidebar.slider("Min RSI Limit", 20, 80, 45)
     
     st.sidebar.markdown("---")
@@ -133,10 +129,16 @@ def run_scanner(stocks, f_n, s_n, rsi_val, t_ema, t_rsi, t_vol, t_smart):
         res = analyze_stock(ticker, f_n, s_n, rsi_val, t_ema, t_rsi, t_vol, t_smart)
         if res and res["Signal"] != "WAIT":
             results.append(res)
-            # ലൈവ് ആയി ടേബിൾ അപ്‌ഡേറ്റ് ചെയ്യുന്നു
+            
             df_res = pd.DataFrame(results)
             df_res.insert(0, 'No', range(1, len(df_res) + 1))
-            res_placeholder.dataframe(df_res.style.applymap(style_signal, subset=['Signal']), use_container_width=True, hide_index=True)
+            
+            # ഇവിടെയാണ് മാറ്റം വരുത്തിയത്: applymap മാറ്റി map ആക്കി
+            res_placeholder.dataframe(
+                df_res.style.map(style_signal, subset=['Signal']), 
+                use_container_width=True, 
+                hide_index=True
+            )
             
         bar.progress((i + 1) / len(stocks))
     
