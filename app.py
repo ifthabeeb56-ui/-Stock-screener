@@ -28,21 +28,22 @@ def get_index_stocks(index_name):
 # --- 3. അനാലിസിസ് ലോജിക് ---
 def analyze_stock(ticker, f_p, s_p, rsi_min, use_ema, use_rsi, use_vol, smart_on):
     try:
-        # ടിിക്കർ ഫോർമാറ്റ് ശരിയാക്കുന്നു
         symbol = str(ticker).split(':')[-1].strip().upper()
         yf_ticker = symbol + ".NS"
         
-        df = yf.download(yf_ticker, period="1y", interval="1d", progress=False, auto_adjust=True)
+        # കുറച്ചുകൂടി സ്റ്റേബിൾ ആയ ഡൗൺലോഡ് രീതി
+        stock = yf.Ticker(yf_ticker)
+        df = stock.history(period="1y", interval="1d", auto_adjust=True)
+        
         if df.empty or len(df) < s_p: return None
         
-        if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
         close = df['Close'].astype(float)
         
-        # EMA കണക്കുകൂട്ടൽ
+        # EMA
         ema_f = close.ewm(span=f_p, adjust=False).mean()
         ema_s = close.ewm(span=s_p, adjust=False).mean()
         
-        # RSI കണക്കുകൂട്ടൽ
+        # RSI
         delta = close.diff()
         gain = delta.clip(lower=0).ewm(alpha=1/14, adjust=False).mean()
         loss = (-1 * delta.clip(upper=0)).ewm(alpha=1/14, adjust=False).mean()
@@ -51,11 +52,11 @@ def analyze_stock(ticker, f_p, s_p, rsi_min, use_ema, use_rsi, use_vol, smart_on
         curr_p = float(close.iloc[-1])
         c_rsi = float(rsi.iloc[-1])
         
-        # കണ്ടീഷനുകൾ
+        # Filters
         ema_ok = (curr_p > ema_f.iloc[-1] and ema_f.iloc[-1] > ema_s.iloc[-1]) if use_ema else True
         rsi_ok = (c_rsi > rsi_min) if use_rsi else True
         
-        # വോളിയം ചെക്ക്
+        # Volume
         curr_vol = float(df['Volume'].iloc[-1])
         avg_vol = float(df['Volume'].iloc[-21:-1].mean())
         vol_ratio = curr_vol / avg_vol if avg_vol > 0 else 0
@@ -71,30 +72,22 @@ def analyze_stock(ticker, f_p, s_p, rsi_min, use_ema, use_rsi, use_vol, smart_on
         elif use_ema and curr_p < ema_s.iloc[-1]:
             signal = "⚠️ EXIT"
             
-        return {
-            "Ticker": symbol, 
-            "Price": round(curr_p, 2), 
-            "Signal": signal,
-            "RSI": round(c_rsi, 1)
-        }
+        return {"Ticker": symbol, "Price": round(curr_p, 1), "Signal": signal, "RSI": round(c_rsi, 1)}
     except: return None
 
-# --- 4. ഡിസ്‌പ്ലേ ബോക്സ് (ലിങ്ക് ഉൾപ്പെടെ) ---
+# --- 4. കോംപാക്റ്റ് ഡിസ്‌പ്ലേ ---
 def display_signal_box(sub_df):
     if not sub_df.empty:
         for _, row in sub_df.iterrows():
             ticker = row['Ticker']
             tv_url = f"https://www.tradingview.com/chart/?symbol=NSE:{ticker}"
-            
             with st.container(border=True):
-                # ഇവിടെ ടിിക്കറിൽ ക്ലിക്ക് ചെയ്താൽ ചാർട്ട് ഓപ്പൺ ആകും
-                st.markdown(f"### [{ticker}]({tv_url})")
-                st.write(f"Price: **₹{row['Price']}**")
-                st.write(f"RSI: {row['RSI']}")
+                # വരികൾക്കിടയിലുള്ള ഗ്യാപ്പ് കുറച്ചു
+                st.markdown(f"**[{ticker}]({tv_url})** | ₹{row['Price']} | RSI: {row['RSI']}")
     else:
-        st.write("No Stocks")
+        st.write("Nil")
 
-# --- 5. മെയിൻ ഫംഗ്ഷൻ ---
+# --- 5. മെയിൻ ഇന്റർഫേസ് ---
 def main():
     st.title("📈 HRC Pro Analyzer V5")
 
@@ -118,22 +111,21 @@ def main():
             run_scanner(stock_list, f_n, s_n, rsi_val, t_ema, t_rsi, t_vol, t_smart)
 
     with tab2:
-        p_input = st.text_area("സ്റ്റോക്കുകൾ കോമ ഇട്ട് നൽകുക (eg: SBIN, RELIANCE):", height=100)
+        p_input = st.text_area("Symbols (SBIN, RELIANCE...):", height=100)
         p_list = [s.strip().upper() for s in p_input.split(",") if s.strip()]
-        if st.button("Analyze Portfolio", use_container_width=True):
+        if st.button("Scan My Portfolio", use_container_width=True):
             run_scanner(p_list, f_n, s_n, rsi_val, t_ema, t_rsi, t_vol, t_smart)
 
-# --- 6. സ്കാനർ ഔട്ട്‌പുട്ട് ---
+# --- 6. സ്കാനർ ഡിസ്‌പ്ലേ ---
 def run_scanner(stocks, f_n, s_n, rsi_val, t_ema, t_rsi, t_vol, t_smart):
     all_results = []
     bar = st.progress(0)
     status_text = st.empty()
     
     for i, ticker in enumerate(stocks):
-        status_text.text(f"Scanning: {ticker}...")
+        status_text.caption(f"Scanning: {ticker}...")
         res = analyze_stock(ticker, f_n, s_n, rsi_val, t_ema, t_rsi, t_vol, t_smart)
-        if res:
-            all_results.append(res)
+        if res: all_results.append(res)
         bar.progress((i + 1) / len(stocks))
     
     status_text.empty()
@@ -158,7 +150,7 @@ def run_scanner(stocks, f_n, s_n, rsi_val, t_ema, t_rsi, t_vol, t_smart):
             st.warning("### ⏳ WAIT")
             display_signal_box(df[df['Signal'] == "⏳ WAIT"])
     else:
-        st.warning("No data found for the selected stocks.")
+        st.warning("Data download failed or no stocks found.")
 
 if __name__ == "__main__":
     main()
