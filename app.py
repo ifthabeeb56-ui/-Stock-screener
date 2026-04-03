@@ -5,7 +5,7 @@ import numpy as np
 from datetime import datetime
 
 # --- 1. പേജ് സെറ്റപ്പ് ---
-st.set_page_config(page_title="HRC Pro Analyzer V6.5", layout="wide")
+st.set_page_config(page_title="HRC Pro Analyzer V6.6", layout="wide")
 
 if 'watchlist' not in st.session_state:
     st.session_state.watchlist = []
@@ -27,40 +27,34 @@ def get_index_stocks(index_name):
     except:
         return ["RELIANCE", "TCS", "HDFCBANK", "INFY"]
 
-# --- 3. ചാനൽ സ്ട്രാറ്റജി ലോജിക് (Kaufman Logic) ---
-def analyze_channel(ticker, period=40):
+# --- 3. ബാക്ക്-ടെസ്റ്റ് ലോജിക് ---
+def perform_backtest(df, f_p, s_p, rsi_min):
     try:
-        symbol = str(ticker).strip().upper()
-        df = yf.download(symbol + ".NS", period="1y", interval="1d", progress=False, auto_adjust=True)
-        if df.empty or len(df) < period: return None
-        
-        if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
         close = df['Close'].astype(float)
-        
-        x = np.arange(period)
-        y = close.iloc[-period:].values
-        slope, intercept = np.polyfit(x, y, 1)
-        linreg_val = slope * (period - 1) + intercept
-        
-        b, t = 0.0, 0.0
-        for i in range(period):
-            current_linreg = slope * i + intercept
-            price_at_i = close.iloc[-(period-i)]
-            b = max(b, current_linreg - price_at_i)
-            t = max(t, price_at_i - current_linreg)
-            
-        upper_band = linreg_val + t + slope
-        lower_band = linreg_val - b + slope
-        curr_p = float(close.iloc[-1])
-        
-        signal = "⏳ WAIT"
-        if curr_p > upper_band: signal = "🚀 CHANNEL BUY"
-        elif curr_p < lower_band: signal = "⚠️ CHANNEL SELL"
-        
-        return {"Ticker": symbol, "Price": int(curr_p), "Signal": signal, "Slope": round(slope, 2), "Upper": int(upper_band), "Lower": int(lower_band)}
-    except: return None
+        ema_f = close.ewm(span=f_p, adjust=False).mean()
+        ema_s = close.ewm(span=s_p, adjust=False).mean()
+        delta = close.diff()
+        gain = delta.clip(lower=0).ewm(alpha=1/14, adjust=False).mean()
+        loss = (-1 * delta.clip(upper=0)).ewm(alpha=1/14, adjust=False).mean()
+        rsi = 100 - (100 / (1 + (gain / loss.replace(0, np.nan))))
+        trades = []
+        in_pos, buy_p = False, 0
+        for i in range(s_p, len(df)):
+            curr_p = float(close.iloc[i])
+            if not in_pos:
+                if curr_p > ema_f.iloc[i] and ema_f.iloc[i] > ema_s.iloc[i] and rsi.iloc[i] > rsi_min:
+                    in_pos, buy_p = True, curr_p
+            elif in_pos:
+                if curr_p < ema_s.iloc[i]:
+                    trades.append(((curr_p - buy_p) / buy_p) * 100)
+                    in_pos = False
+        if trades:
+            win_r = (len([t for t in trades if t > 0]) / len(trades)) * 100
+            return len(trades), round(win_r, 0), round(sum(trades)/len(trades), 1)
+        return 0, 0, 0
+    except: return 0, 0, 0
 
-# --- 4. പഴയ സ്കാനർ ലോജിക് (EMA/RSI) ---
+# --- 4. പഴയ അനാലിസിസ് ലോജിക് (EMA/RSI/VOL/ADX) ---
 def analyze_stock(ticker, f_p, s_p, rsi_min, use_ema, use_rsi, use_vol, use_adx, smart_on):
     try:
         symbol = str(ticker).strip().upper()
@@ -68,94 +62,94 @@ def analyze_stock(ticker, f_p, s_p, rsi_min, use_ema, use_rsi, use_vol, use_adx,
         if df.empty or len(df) < s_p: return None
         if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
         
-        close = df['Close'].astype(float)
-        ema_f = close.ewm(span=f_p, adjust=False).mean()
-        ema_s = close.ewm(span=s_p, adjust=False).mean()
+        close, high, low = df['Close'].astype(float), df['High'].astype(float), df['Low'].astype(float)
         
+        # ADX Calculation
+        plus_dm = high.diff().clip(lower=0)
+        minus_dm = low.diff().clip(upper=0).abs()
+        tr = pd.concat([high - low, (high - close.shift()).abs(), (low - close.shift()).abs()], axis=1).max(axis=1)
+        atr = tr.rolling(window=14).mean()
+        plus_di = 100 * (plus_dm.rolling(window=14).mean() / atr)
+        minus_di = 100 * (minus_dm.rolling(window=14).mean() / atr)
+        dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di)
+        adx = dx.rolling(window=14).mean().iloc[-1]
+
+        # EMA & RSI
+        ema_f, ema_s = close.ewm(span=f_p, adjust=False).mean(), close.ewm(span=s_p, adjust=False).mean()
         delta = close.diff()
         gain = delta.clip(lower=0).ewm(alpha=1/14, adjust=False).mean()
         loss = (-1 * delta.clip(upper=0)).ewm(alpha=1/14, adjust=False).mean()
         rsi = 100 - (100 / (1 + (gain / loss.replace(0, np.nan))))
         
         curr_p, c_rsi = float(close.iloc[-1]), float(rsi.iloc[-1])
+        avg_vol = float(df['Volume'].iloc[-14:-1].mean())
+        vol_ok = (float(df['Volume'].iloc[-1]) / avg_vol > 1.5) if use_vol and avg_vol > 0 else True
+        recent_high = float(df['High'].iloc[-14:-1].max())
+
         ema_ok = (curr_p > ema_f.iloc[-1] and ema_f.iloc[-1] > ema_s.iloc[-1]) if use_ema else True
         rsi_ok = (c_rsi > rsi_min) if use_rsi else True
-        
+        adx_ok = (adx > 25) if use_adx else True
+
         signal = "⏳ WAIT"
-        if ema_ok and rsi_ok: signal = "✅ BUY"
-        elif use_ema and curr_p < ema_s.iloc[-1]: signal = "⚠️ EXIT"
-        
-        return {"Ticker": symbol, "Price": int(curr_p), "Signal": signal, "RSI": int(c_rsi)}
+        if ema_ok and rsi_ok and vol_ok and adx_ok:
+            signal = "🚀 SMART" if (smart_on and curr_p > recent_high) else "✅ BUY"
+        elif use_ema and curr_p < ema_s.iloc[-1]: 
+            signal = "⚠️ EXIT"
+
+        t_count, win_r, avg_p = perform_backtest(df, f_p, s_p, rsi_min)
+        return {"Ticker": symbol, "Price": int(curr_p), "Signal": signal, "RSI": int(c_rsi), "ADX": int(adx), "Win%": int(win_r), "Avg%": avg_p}
     except: return None
 
-# --- 5. മെയിൻ ഇന്റർഫേസ് ---
+# --- 5. കൗഫ്മാൻ ചാനൽ ലോജിക് ---
+def analyze_channel(ticker, period=40):
+    try:
+        symbol = str(ticker).strip().upper()
+        df = yf.download(symbol + ".NS", period="1y", interval="1d", progress=False, auto_adjust=True)
+        if df.empty or len(df) < period: return None
+        if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
+        close = df['Close'].astype(float)
+        x = np.arange(period)
+        y = close.iloc[-period:].values
+        slope, intercept = np.polyfit(x, y, 1)
+        linreg_val = slope * (period - 1) + intercept
+        b, t = 0.0, 0.0
+        for i in range(period):
+            current_linreg = slope * i + intercept
+            price_at_i = close.iloc[-(period-i)]
+            b = max(b, current_linreg - price_at_i)
+            t = max(t, price_at_i - current_linreg)
+        upper_band = linreg_val + t + slope
+        lower_band = linreg_val - b + slope
+        curr_p = float(close.iloc[-1])
+        signal = "⏳ WAIT"
+        if curr_p > upper_band: signal = "🚀 CHANNEL BUY"
+        elif curr_p < lower_band: signal = "⚠️ CHANNEL SELL"
+        return {"Ticker": symbol, "Price": int(curr_p), "Signal": signal, "Slope": round(slope, 2), "Upper": int(upper_band), "Lower": int(lower_band)}
+    except: return None
+
+# --- 6. മെയിൻ ഇന്റർഫേസ് ---
 def main():
-    st.title("📈 HRC Pro Analyzer V6.5")
+    st.title("📈 HRC Pro Analyzer V6.6")
     
+    # SideBar Settings (For Market Scan)
+    st.sidebar.header("⚙️ General Settings")
+    f_n = st.sidebar.number_input("Fast EMA", value=50)
+    s_n = st.sidebar.number_input("Slow EMA", value=200)
+    rsi_val = st.sidebar.slider("Min RSI Limit", 20, 80, 50)
+    
+    st.sidebar.subheader("Filters (On/Off)")
+    t_ema = st.sidebar.checkbox("EMA Filter", True)
+    t_rsi = st.sidebar.checkbox("RSI Filter", True)
+    t_vol = st.sidebar.checkbox("Volume Filter", True)
+    t_adx = st.sidebar.checkbox("ADX Filter (>25)", True)
+    t_smart = st.sidebar.checkbox("SMART BUY Mode", True)
+
     tab1, tab2, tab3 = st.tabs(["🔍 Market Scan", "🌊 Channel Strategy", "💰 Portfolio"])
     
     with tab1:
-        st.sidebar.header("⚙️ General Settings")
-        f_n = st.sidebar.number_input("Fast EMA", value=50)
-        s_n = st.sidebar.number_input("Slow EMA", value=200)
-        rsi_val = st.sidebar.slider("Min RSI Limit", 20, 80, 50)
-        
         idx = st.selectbox("Select Index:", ["Nifty 50", "Nifty Next 50", "Nifty 100", "Nifty 500"])
         if st.button(f"Scan {idx} (General)", use_container_width=True):
-            stocks = get_index_stocks(idx)
-            run_general_scanner(stocks, f_n, s_n, rsi_val)
+            run_general_scanner(get_index_stocks(idx), f_n, s_n, rsi_val, t_ema, t_rsi, t_vol, t_adx, t_smart)
 
     with tab2:
-        st.subheader("Kaufman Channel Breakout Scan")
-        idx_ch = st.selectbox("Select Index for Channel Scan:", ["Nifty 50", "Nifty Next 50", "Nifty 100", "Nifty 500"], key="ch_idx")
-        lookback = st.slider("Channel Period", 10, 100, 40)
-        if st.button("Start Channel Scan", use_container_width=True):
-            stocks = get_index_stocks(idx_ch)
-            run_channel_scanner(stocks, lookback)
-
-    with tab3:
-        st.subheader("Your Watchlist")
-        if st.session_state.watchlist:
-            st.write(st.session_state.watchlist)
-        else:
-            st.write("Watchlist is empty.")
-
-# --- 6. സ്കാനർ ഫംഗ്ഷനുകൾ ---
-def run_general_scanner(stocks, f_n, s_n, rsi_val):
-    results = []
-    bar = st.progress(0)
-    for i, t in enumerate(stocks):
-        res = analyze_stock(t, f_n, s_n, rsi_val, True, True, False, False, False)
-        if res: results.append(res)
-        bar.progress((i + 1) / len(stocks))
-    if results:
-        df = pd.DataFrame(results)
-        st.dataframe(df, use_container_width=True)
-        st.download_button("📥 Download Report", df.to_csv(index=False).encode('utf-8'), "general_scan.csv")
-
-def run_channel_scanner(stocks, lookback):
-    results = []
-    bar = st.progress(0)
-    for i, t in enumerate(stocks):
-        res = analyze_channel(t, lookback)
-        if res: results.append(res)
-        bar.progress((i + 1) / len(stocks))
-    
-    if results:
-        df = pd.DataFrame(results)
-        c1, c2 = st.columns(2)
-        with c1:
-            st.success("### 🚀 CHANNEL BUY")
-            d_buy = df[df['Signal'] == "🚀 CHANNEL BUY"]
-            st.dataframe(d_buy)
-            if not d_buy.empty: st.download_button("📥 Download Buy List", d_buy.to_csv(index=False).encode('utf-8'), "ch_buy.csv")
-        with c2:
-            st.error("### ⚠️ CHANNEL SELL")
-            d_sell = df[df['Signal'] == "⚠️ CHANNEL SELL"]
-            st.dataframe(d_sell)
-            if not d_sell.empty: st.download_button("📥 Download Sell List", d_sell.to_csv(index=False).encode('utf-8'), "ch_sell.csv")
-    else:
-        st.warning("No data found.")
-
-if __name__ == "__main__":
-    main()
+        idx_ch = st.selectbox("Select Index for Channel Scan:", ["Nifty 5
