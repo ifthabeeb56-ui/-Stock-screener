@@ -2,7 +2,6 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
-from datetime import date
 
 # --- 1. പേജ് സെറ്റപ്പ് ---
 st.set_page_config(page_title="HRC Pro Analyzer V5", layout="wide")
@@ -24,27 +23,26 @@ def get_index_stocks(index_name):
         col = 'Symbol' if 'Symbol' in df.columns else df.columns[0]
         return df[col].str.strip().tolist()
     except:
-        return ["RELIANCE", "TCS", "HDFCBANK", "INFY", "ICICIBANK", "AXISBANK", "SBIN"]
+        return ["RELIANCE", "TCS", "HDFCBANK", "INFY", "ICICIBANK"]
 
 # --- 3. അനാലിസിസ് ലോജിക് ---
 def analyze_stock(ticker, f_p, s_p, rsi_min, use_ema, use_rsi, use_vol, smart_on):
     try:
-        yf_ticker = str(ticker).strip().upper() + ".NS"
+        # ടിിക്കർ ഫോർമാറ്റ് ശരിയാക്കുന്നു
+        symbol = str(ticker).split(':')[-1].strip().upper()
+        yf_ticker = symbol + ".NS"
+        
         df = yf.download(yf_ticker, period="1y", interval="1d", progress=False, auto_adjust=True)
+        if df.empty or len(df) < s_p: return None
         
-        if df.empty or len(df) < s_p: 
-            return None
-        
-        if isinstance(df.columns, pd.MultiIndex): 
-            df.columns = df.columns.get_level_values(0)
-        
+        if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
         close = df['Close'].astype(float)
         
-        # EMA Calculations
+        # EMA കണക്കുകൂട്ടൽ
         ema_f = close.ewm(span=f_p, adjust=False).mean()
         ema_s = close.ewm(span=s_p, adjust=False).mean()
         
-        # RSI Calculations
+        # RSI കണക്കുകൂട്ടൽ
         delta = close.diff()
         gain = delta.clip(lower=0).ewm(alpha=1/14, adjust=False).mean()
         loss = (-1 * delta.clip(upper=0)).ewm(alpha=1/14, adjust=False).mean()
@@ -53,49 +51,56 @@ def analyze_stock(ticker, f_p, s_p, rsi_min, use_ema, use_rsi, use_vol, smart_on
         curr_p = float(close.iloc[-1])
         c_rsi = float(rsi.iloc[-1])
         
-        # Conditions
+        # കണ്ടീഷനുകൾ
         ema_ok = (curr_p > ema_f.iloc[-1] and ema_f.iloc[-1] > ema_s.iloc[-1]) if use_ema else True
         rsi_ok = (c_rsi > rsi_min) if use_rsi else True
         
-        # Volume Check
+        # വോളിയം ചെക്ക്
         curr_vol = float(df['Volume'].iloc[-1])
         avg_vol = float(df['Volume'].iloc[-21:-1].mean())
         vol_ratio = curr_vol / avg_vol if avg_vol > 0 else 0
         vol_ok = (vol_ratio > 1.5) if use_vol else True
 
-        signal = "WAIT"
+        signal = "⏳ WAIT"
         if ema_ok and rsi_ok and vol_ok:
             recent_high = float(df['High'].iloc[-21:-1].max())
             if smart_on and curr_p > recent_high:
-                signal = "🚀 SMART BUY"
+                signal = "🚀 SMART"
             else:
                 signal = "✅ BUY"
         elif use_ema and curr_p < ema_s.iloc[-1]:
             signal = "⚠️ EXIT"
             
         return {
-            "Ticker": ticker, 
+            "Ticker": symbol, 
             "Price": round(curr_p, 2), 
             "Signal": signal,
-            "RSI": round(c_rsi, 1), 
-            "Vol Ratio": round(vol_ratio, 2)
+            "RSI": round(c_rsi, 1)
         }
-    except: 
-        return None
+    except: return None
 
-# സിഗ്നലിന് നിറം നൽകാനുള്ള ഫംഗ്‌ഷൻ
-def style_signal(val):
-    if "BUY" in str(val): return 'color: #28a745; font-weight: bold'
-    if "EXIT" in str(val): return 'color: #dc3545; font-weight: bold'
-    return ''
+# --- 4. ഡിസ്‌പ്ലേ ബോക്സ് (ലിങ്ക് ഉൾപ്പെടെ) ---
+def display_signal_box(sub_df):
+    if not sub_df.empty:
+        for _, row in sub_df.iterrows():
+            ticker = row['Ticker']
+            tv_url = f"https://www.tradingview.com/chart/?symbol=NSE:{ticker}"
+            
+            with st.container(border=True):
+                # ഇവിടെ ടിിക്കറിൽ ക്ലിക്ക് ചെയ്താൽ ചാർട്ട് ഓപ്പൺ ആകും
+                st.markdown(f"### [{ticker}]({tv_url})")
+                st.write(f"Price: **₹{row['Price']}**")
+                st.write(f"RSI: {row['RSI']}")
+    else:
+        st.write("No Stocks")
 
-# --- 4. മെയിൻ ഇന്റർഫേസ് ---
+# --- 5. മെയിൻ ഫംഗ്ഷൻ ---
 def main():
     st.title("📈 HRC Pro Analyzer V5")
 
     st.sidebar.header("⚙️ Settings")
-    f_n = st.sidebar.number_input("Fast EMA (eg: 50)", value=50)
-    s_n = st.sidebar.number_input("Slow EMA (eg: 200)", value=200)
+    f_n = st.sidebar.number_input("Fast EMA", value=50)
+    s_n = st.sidebar.number_input("Slow EMA", value=200)
     rsi_val = st.sidebar.slider("Min RSI Limit", 20, 80, 45)
     
     st.sidebar.markdown("---")
@@ -109,41 +114,51 @@ def main():
     with tab1:
         index_choice = st.selectbox("Select Index:", ["Nifty 50", "Nifty Next 50", "Nifty 100", "Nifty 500", "Nifty Bank", "Nifty IT"])
         stock_list = get_index_stocks(index_choice)
-        
         if st.button(f"Scan {index_choice}", use_container_width=True):
             run_scanner(stock_list, f_n, s_n, rsi_val, t_ema, t_rsi, t_vol, t_smart)
 
     with tab2:
-        p_input = st.text_area("സ്റ്റോക്കുകൾ നൽകുക (eg: SBIN, RELIANCE, TCS):", height=100)
+        p_input = st.text_area("സ്റ്റോക്കുകൾ കോമ ഇട്ട് നൽകുക (eg: SBIN, RELIANCE):", height=100)
         p_list = [s.strip().upper() for s in p_input.split(",") if s.strip()]
-        if st.button("Scan My Portfolio", use_container_width=True):
+        if st.button("Analyze Portfolio", use_container_width=True):
             run_scanner(p_list, f_n, s_n, rsi_val, t_ema, t_rsi, t_vol, t_smart)
 
-# --- 5. സ്കാനർ ഡിസ്‌പ്ലേ ---
+# --- 6. സ്കാനർ ഔട്ട്‌പുട്ട് ---
 def run_scanner(stocks, f_n, s_n, rsi_val, t_ema, t_rsi, t_vol, t_smart):
-    results = []
+    all_results = []
     bar = st.progress(0)
-    res_placeholder = st.empty()
+    status_text = st.empty()
     
     for i, ticker in enumerate(stocks):
+        status_text.text(f"Scanning: {ticker}...")
         res = analyze_stock(ticker, f_n, s_n, rsi_val, t_ema, t_rsi, t_vol, t_smart)
-        if res and res["Signal"] != "WAIT":
-            results.append(res)
-            
-            df_res = pd.DataFrame(results)
-            df_res.insert(0, 'No', range(1, len(df_res) + 1))
-            
-            # ഇവിടെയാണ് മാറ്റം വരുത്തിയത്: applymap മാറ്റി map ആക്കി
-            res_placeholder.dataframe(
-                df_res.style.map(style_signal, subset=['Signal']), 
-                use_container_width=True, 
-                hide_index=True
-            )
-            
+        if res:
+            all_results.append(res)
         bar.progress((i + 1) / len(stocks))
     
-    if not results:
-        st.warning("നിബന്ധനകൾ പാലിക്കുന്ന സ്റ്റോക്കുകൾ ലഭ്യമല്ല.")
+    status_text.empty()
+
+    if all_results:
+        df = pd.DataFrame(all_results)
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.success("### ✅ BUY")
+            display_signal_box(df[df['Signal'] == "✅ BUY"])
+
+        with col2:
+            st.info("### 🚀 SMART")
+            display_signal_box(df[df['Signal'] == "🚀 SMART"])
+
+        with col3:
+            st.error("### ⚠️ EXIT")
+            display_signal_box(df[df['Signal'] == "⚠️ EXIT"])
+
+        with col4:
+            st.warning("### ⏳ WAIT")
+            display_signal_box(df[df['Signal'] == "⏳ WAIT"])
+    else:
+        st.warning("No data found for the selected stocks.")
 
 if __name__ == "__main__":
     main()
