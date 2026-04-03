@@ -2,154 +2,146 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
-import os
-from datetime import date
 
 # --- 1. പേജ് സെറ്റപ്പ് ---
-st.set_page_config(page_title="Habeeb's Pro Analyzer V4", layout="wide")
+st.set_page_config(page_title="Habeeb's Pro Analyzer V6", layout="wide")
 
-PORTFOLIO_FILE = "my_portfolio.csv"
-
-# --- 2. ഡാറ്റ മാനേജ്‌മെന്റ് ഫംഗ്‌ഷനുകൾ ---
-def load_data():
-    if os.path.exists(PORTFOLIO_FILE):
-        return pd.read_csv(PORTFOLIO_FILE)
-    return pd.DataFrame(columns=['Ticker', 'Buy Date', 'Qty', 'Avg Price'])
-
-def save_data(df):
-    df.to_csv(PORTFOLIO_FILE, index=False)
-
+# --- 2. ഇൻഡക്സുകൾ ലോഡ് ചെയ്യുന്ന ഫംഗ്‌ഷൻ ---
 @st.cache_data(ttl=86400)
 def get_index_stocks(index_name):
     indices = {
         "Nifty 50": "https://archives.nseindia.com/content/indices/ind_nifty50list.csv",
+        "Nifty Next 50": "https://archives.nseindia.com/content/indices/ind_niftynext50list.csv",
         "Nifty 100": "https://archives.nseindia.com/content/indices/ind_nifty100list.csv",
-        "Nifty 500": "https://archives.nseindia.com/content/indices/ind_nifty500list.csv"
+        "Nifty 500": "https://archives.nseindia.com/content/indices/ind_nifty500list.csv",
+        "Nifty Bank": "https://archives.nseindia.com/content/indices/ind_niftybanklist.csv",
+        "Nifty IT": "https://archives.nseindia.com/content/indices/ind_niftyitlist.csv"
     }
     try:
-        df = pd.read_csv(indices.get(index_name))
+        url = indices.get(index_name)
+        df = pd.read_csv(url)
         col = 'Symbol' if 'Symbol' in df.columns else df.columns[0]
         return df[col].str.strip().tolist()
     except:
-        return ["RELIANCE", "TCS", "SBIN", "INFY", "TATAMOTORS"]
+        return ["RELIANCE", "TCS", "HDFCBANK", "INFY", "ICICIBANK"]
 
-# --- 3. അനാലിസിസ് ലോജിക് ---
-def analyze_stock(ticker, f_p, s_p, rsi_val):
+# --- 3. ഇൻഡിക്കേറ്റർ കാൽക്കുലേഷൻ ---
+def calculate_indicators(df, f_period, s_period):
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+    close = df['Close'].astype(float)
+    ema_f = close.ewm(span=f_period, adjust=False).mean()
+    ema_s = close.ewm(span=s_period, adjust=False).mean()
+    
+    delta = close.diff()
+    gain = delta.clip(lower=0)
+    loss = -1 * delta.clip(upper=0)
+    avg_gain = gain.ewm(alpha=1/14, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1/14, adjust=False).mean()
+    rs = avg_gain / (avg_loss.replace(0, np.nan))
+    rsi = 100 - (100 / (1 + rs))
+    return ema_f, ema_s, rsi.fillna(50)
+
+# --- 4. അനാലിസിസ് ലോജിക് ---
+def analyze_stock(ticker, f_p, s_p, rsi_min, use_ema, use_rsi, use_vol, smart_on):
     try:
-        yf_ticker = str(ticker).strip().upper() + ".NS"
+        yf_ticker = str(ticker).strip() + ".NS"
         df = yf.download(yf_ticker, period="1y", interval="1d", progress=False, auto_adjust=True)
         if df.empty or len(df) < s_p: return None
-        if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
         
-        close = df['Close'].astype(float)
-        ema_f = close.ewm(span=f_p, adjust=False).mean().iloc[-1]
-        ema_s = close.ewm(span=s_p, adjust=False).mean().iloc[-1]
+        ema_f, ema_s, rsi = calculate_indicators(df, f_p, s_p)
+        curr_price = float(df['Close'].iloc[-1])
+        c_rsi = float(rsi.iloc[-1])
         
-        delta = close.diff()
-        gain = delta.clip(lower=0).ewm(alpha=1/14, adjust=False).mean()
-        loss = (-1 * delta.clip(upper=0)).ewm(alpha=1/14, adjust=False).mean()
-        rsi = 100 - (100 / (1 + (gain / loss.replace(0, np.nan)))).iloc[-1]
+        ema_ok = (curr_price > ema_f.iloc[-1] and ema_f.iloc[-1] > ema_s.iloc[-1]) if use_ema else True
+        rsi_ok = (c_rsi > rsi_min) if use_rsi else True
         
-        curr_p = float(close.iloc[-1])
-        sig = "⏳ WAIT"
-        if curr_p > ema_f and ema_f > ema_s and rsi > rsi_val: sig = "✅ BUY"
-        elif curr_p < ema_s: sig = "⚠️ EXIT"
+        curr_vol = float(df['Volume'].iloc[-1])
+        avg_vol = float(df['Volume'].iloc[-21:-1].mean())
+        vol_ratio = curr_vol / avg_vol if avg_vol > 0 else 0
+        vol_ok = (vol_ratio > 1.5) if use_vol else True
+
+        df_w = df.resample('W').last()
+        w_ema = df_w['Close'].ewm(span=30, adjust=False).mean().iloc[-1]
+        is_weekly_bullish = df_w['Close'].iloc[-1] > w_ema
+        recent_high = float(df['High'].iloc[-21:-1].max())
+
+        # സിഗ്നൽ തീരുമാനിക്കുന്നു
+        if smart_on and ema_ok and rsi_ok and vol_ok and is_weekly_bullish and curr_price > recent_high:
+            signal = "🚀 SMART BUY"
+        elif ema_ok and rsi_ok and vol_ok:
+            signal = "✅ BUY"
+        elif use_ema and curr_price < ema_s.iloc[-1]:
+            signal = "⚠️ EXIT"
+        else:
+            signal = "⏳ WAIT"
             
-        return {"Ticker": ticker, "LTP": round(curr_p, 2), "RSI": round(rsi, 1), "Signal": sig}
+        return {
+            "Ticker": ticker, "Price": round(curr_price, 2), "Signal": signal,
+            "RSI": round(c_rsi, 1), "Vol Ratio": round(vol_ratio, 2)
+        }
     except: return None
 
-# --- 4. മെയിൻ ഇന്റർഫേസ് ---
+# --- 5. മെയിൻ ഇന്റർഫേസ് ---
 def main():
-    st.title("📈 Habeeb's Pro Analyzer V4")
+    st.title("📈 Habeeb's Pro Analyzer V6")
 
-    st.sidebar.header("⚙️ Strategy Settings")
-    f_p = st.sidebar.number_input("Fast EMA", value=50)
-    s_p = st.sidebar.number_input("Slow EMA", value=200)
-    rsi_v = st.sidebar.slider("Min RSI", 20, 80, 45)
+    tab1, tab2, tab3 = st.tabs(["🔍 Market Scan", "💰 Portfolio", "👀 Watchlist"])
 
-    tab1, tab2, tab3 = st.tabs(["📊 Dashboard", "🔍 Market Scan", "🛒 Trade Manager"])
+    # Sidebar settings
+    st.sidebar.header("⚙️ Global Settings")
+    f_n = st.sidebar.number_input("Fast EMA", value=50)
+    s_n = st.sidebar.number_input("Slow EMA", value=200)
+    rsi_val = st.sidebar.slider("Min RSI", 20, 80, 45)
+    
+    st.sidebar.markdown("---")
+    t_ema = st.sidebar.checkbox("Enable EMA Filter", value=True)
+    t_rsi = st.sidebar.checkbox("Enable RSI Filter", value=True)
+    t_vol = st.sidebar.checkbox("Enable Volume Filter", value=True)
+    t_smart = st.sidebar.checkbox("Enable 🚀 SMART BUY", value=True)
 
-    # --- TAB 1: DASHBOARD ---
-    with tab1:
-        st.subheader("🔎 Quick Stock Check")
-        q_search = st.text_input("സ്റ്റോക്ക് പേര് (eg: SBIN)", "").upper()
-        if q_search:
-            res = analyze_stock(q_search, f_p, s_p, rsi_v)
-            if res:
-                c1, c2, c3 = st.columns(3)
-                c1.metric("Current Price", f"₹{res['LTP']}")
-                c2.metric("RSI", res['RSI'])
-                c3.subheader(f"Signal: {res['Signal']}")
-            else: st.warning("ഡാറ്റ ലഭ്യമല്ല.")
-        
-        st.divider()
-        st.subheader("Your Current Portfolio Status")
-        df_p = load_data()
-        if not df_p.empty:
-            p_display = []
-            for idx, row in df_p.iterrows():
-                live = analyze_stock(row['Ticker'], f_p, s_p, rsi_v)
-                if live:
-                    current_val = row['Qty'] * live['LTP']
-                    invested_val = row['Qty'] * row['Avg Price']
-                    p_diff = current_val - invested_val
-                    p_perc = (p_diff / invested_val) * 100 if invested_val > 0 else 0
-                    p_display.append({
-                        "Ticker": row['Ticker'], "Qty": row['Qty'], "Avg Price": row['Avg Price'],
-                        "LTP": live['LTP'], "Profit/Loss": round(p_diff, 2), "P&L %": f"{round(p_perc, 2)}%",
-                        "Signal": live['Signal']
-                    })
-            st.dataframe(pd.DataFrame(p_display), use_container_width=True)
-        else: st.info("പോർട്ട്‌ഫോളിയോ കാലിയാണ്.")
-
-    # --- TAB 2: MARKET SCAN ---
-    with tab2:
-        st.subheader("Market Index Scanner")
-        idx_choice = st.selectbox("ഇൻഡക്സ് തിരഞ്ഞെടുക്കുക:", ["Nifty 50", "Nifty 100", "Nifty 500"])
-        if st.button("🚀 Start Scan"):
-            stocks = get_index_stocks(idx_choice)
+    def process_and_display(stocks):
+        if st.button(f"🚀 Start Scanning ({len(stocks)} Stocks)", use_container_width=True):
             results = []
             bar = st.progress(0)
-            placeholder = st.empty()
             
-            for i, tkr in enumerate(stocks):
-                res = analyze_stock(tkr, f_p, s_p, rsi_v)
+            # നാല് ബോക്സുകൾ (Columns) സെറ്റ് ചെയ്യുന്നു
+            col1, col2, col3, col4 = st.columns(4)
+            with col1: st.info("🚀 SMART BUY")
+            with col2: st.success("✅ BUY")
+            with col3: st.warning("⚠️ EXIT")
+            with col4: st.error("⏳ WAIT")
+            
+            placeholders = [col1.empty(), col2.empty(), col3.empty(), col4.empty()]
+
+            for i, ticker in enumerate(stocks):
+                res = analyze_stock(ticker, f_n, s_n, rsi_val, t_ema, t_rsi, t_vol, t_smart)
                 if res:
                     results.append(res)
-                    placeholder.dataframe(pd.DataFrame(results), use_container_width=True)
-                bar.progress((i + 1) / len(stocks))
-            
-            buy_alerts = [r['Ticker'] for r in results if r['Signal'] == "✅ BUY"]
-            if buy_alerts:
-                st.success(f"വാങ്ങാൻ അനുയോജ്യമായവ: {', '.join(buy_alerts)}")
-
-    # --- TAB 3: TRADE MANAGER ---
-    with tab3:
-        st.subheader("Manage Portfolio (Add/Edit)")
-        with st.form("trade_form", clear_on_submit=True):
-            bn = st.text_input("Ticker Symbol").upper()
-            bq = st.number_input("Quantity", min_value=1)
-            bp = st.number_input("Average Price", min_value=1.0)
-            if st.form_submit_button("Save Stock"):
-                if bn:
-                    df_p = load_data()
-                    # പഴയ ഡാറ്റ ഉണ്ടോ എന്ന് നോക്കുന്നു (Duplicate Check)
-                    if bn in df_p['Ticker'].values:
-                        idx = df_p[df_p['Ticker'] == bn].index[0]
-                        old_qty = df_p.at[idx, 'Qty']
-                        old_price = df_p.at[idx, 'Avg Price']
-                        # ശരാശരി വില കണക്കാക്കുന്നു
-                        new_total_qty = old_qty + bq
-                        new_avg_price = ((old_qty * old_price) + (bq * bp)) / new_total_qty
-                        df_p.at[idx, 'Qty'] = new_total_qty
-                        df_p.at[idx, 'Avg Price'] = round(new_avg_price, 2)
-                    else:
-                        new_row = pd.DataFrame([[bn, str(date.today()), bq, bp]], columns=['Ticker', 'Buy Date', 'Qty', 'Avg Price'])
-                        df_p = pd.concat([df_p, new_row], ignore_index=True)
+                    df = pd.DataFrame(results)
                     
-                    save_data(df_p)
-                    st.success(f"{bn} അപ്‌ഡേറ്റ് ചെയ്തു!")
-                    st.rerun()
+                    # ഓരോ വിഭാഗത്തെയും ഫിൽട്ടർ ചെയ്ത് അതത് ബോക്സിൽ കാണിക്കുന്നു
+                    for idx, sig in enumerate(["🚀 SMART BUY", "✅ BUY", "⚠️ EXIT", "⏳ WAIT"]):
+                        filtered_df = df[df['Signal'] == sig].copy()
+                        if not filtered_df.empty:
+                            filtered_df.insert(0, 'No', range(1, len(filtered_df) + 1))
+                            placeholders[idx].dataframe(
+                                filtered_df[['No', 'Ticker', 'Price']], 
+                                hide_index=True, use_container_width=True
+                            )
+                bar.progress((i + 1) / len(stocks))
+
+    with tab1:
+        index_choice = st.selectbox("ഇൻഡക്സ്:", ["Nifty 50", "Nifty Next 50", "Nifty 100", "Nifty 500"])
+        process_and_display(get_index_stocks(index_choice))
+
+    with tab2:
+        p_input = st.text_area("Portfolio Stocks:", "RELIANCE, HDFCBANK", key="p_box")
+        process_and_display([s.strip().upper() for s in p_input.split(",") if s.strip()])
+
+    with tab3:
+        w_input = st.text_area("Watchlist Stocks:", "TCS, SBIN", key="w_box")
+        process_and_display([s.strip().upper() for s in w_input.split(",") if s.strip()])
 
 if __name__ == "__main__":
     main()
