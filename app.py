@@ -31,7 +31,7 @@ def analyze_stock(ticker, f_p, s_p, rsi_min, use_ema, use_rsi, use_vol, smart_on
         symbol = str(ticker).split(':')[-1].strip().upper()
         yf_ticker = symbol + ".NS"
         
-        # കുറച്ചുകൂടി സ്റ്റേബിൾ ആയ ഡൗൺലോഡ് രീതി
+        # കൂടുതൽ സ്റ്റേബിൾ ആയ ഡാറ്റാ ഡൗൺലോഡ്
         stock = yf.Ticker(yf_ticker)
         df = stock.history(period="1y", interval="1d", auto_adjust=True)
         
@@ -39,11 +39,11 @@ def analyze_stock(ticker, f_p, s_p, rsi_min, use_ema, use_rsi, use_vol, smart_on
         
         close = df['Close'].astype(float)
         
-        # EMA
+        # EMA കണക്കുകൂട്ടൽ
         ema_f = close.ewm(span=f_p, adjust=False).mean()
         ema_s = close.ewm(span=s_p, adjust=False).mean()
         
-        # RSI
+        # RSI കണക്കുകൂട്ടൽ
         delta = close.diff()
         gain = delta.clip(lower=0).ewm(alpha=1/14, adjust=False).mean()
         loss = (-1 * delta.clip(upper=0)).ewm(alpha=1/14, adjust=False).mean()
@@ -52,11 +52,10 @@ def analyze_stock(ticker, f_p, s_p, rsi_min, use_ema, use_rsi, use_vol, smart_on
         curr_p = float(close.iloc[-1])
         c_rsi = float(rsi.iloc[-1])
         
-        # Filters
+        # സിഗ്നൽ കണ്ടീഷനുകൾ
         ema_ok = (curr_p > ema_f.iloc[-1] and ema_f.iloc[-1] > ema_s.iloc[-1]) if use_ema else True
         rsi_ok = (c_rsi > rsi_min) if use_rsi else True
         
-        # Volume
         curr_vol = float(df['Volume'].iloc[-1])
         avg_vol = float(df['Volume'].iloc[-21:-1].mean())
         vol_ratio = curr_vol / avg_vol if avg_vol > 0 else 0
@@ -75,14 +74,13 @@ def analyze_stock(ticker, f_p, s_p, rsi_min, use_ema, use_rsi, use_vol, smart_on
         return {"Ticker": symbol, "Price": round(curr_p, 1), "Signal": signal, "RSI": round(c_rsi, 1)}
     except: return None
 
-# --- 4. കോംപാക്റ്റ് ഡിസ്‌പ്ലേ ---
+# --- 4. കോംപാക്റ്റ് സിഗ്നൽ ബോക്സ് ---
 def display_signal_box(sub_df):
     if not sub_df.empty:
         for _, row in sub_df.iterrows():
             ticker = row['Ticker']
             tv_url = f"https://www.tradingview.com/chart/?symbol=NSE:{ticker}"
             with st.container(border=True):
-                # വരികൾക്കിടയിലുള്ള ഗ്യാപ്പ് കുറച്ചു
                 st.markdown(f"**[{ticker}]({tv_url})** | ₹{row['Price']} | RSI: {row['RSI']}")
     else:
         st.write("Nil")
@@ -107,16 +105,16 @@ def main():
     with tab1:
         index_choice = st.selectbox("Select Index:", ["Nifty 50", "Nifty Next 50", "Nifty 100", "Nifty 500", "Nifty Bank", "Nifty IT"])
         stock_list = get_index_stocks(index_choice)
-        if st.button(f"Scan {index_choice}", use_container_width=True):
+        if st.button(f"Start Scan: {index_choice}", use_container_width=True):
             run_scanner(stock_list, f_n, s_n, rsi_val, t_ema, t_rsi, t_vol, t_smart)
 
     with tab2:
-        p_input = st.text_area("Symbols (SBIN, RELIANCE...):", height=100)
+        p_input = st.text_area("Symbols (eg: SBIN, RELIANCE):", height=100)
         p_list = [s.strip().upper() for s in p_input.split(",") if s.strip()]
-        if st.button("Scan My Portfolio", use_container_width=True):
+        if st.button("Analyze Portfolio", use_container_width=True):
             run_scanner(p_list, f_n, s_n, rsi_val, t_ema, t_rsi, t_vol, t_smart)
 
-# --- 6. സ്കാനർ ഡിസ്‌പ്ലേ ---
+# --- 6. സ്കാനർ ഔട്ട്‌പുട്ട് ലോജിക് ---
 def run_scanner(stocks, f_n, s_n, rsi_val, t_ema, t_rsi, t_vol, t_smart):
     all_results = []
     bar = st.progress(0)
@@ -132,25 +130,41 @@ def run_scanner(stocks, f_n, s_n, rsi_val, t_ema, t_rsi, t_vol, t_smart):
 
     if all_results:
         df = pd.DataFrame(all_results)
-        col1, col2, col3, col4 = st.columns(4)
         
+        # സിഗ്നൽ കാർഡുകൾ (4 കോളങ്ങൾ)
+        col1, col2, col3, col4 = st.columns(4)
         with col1:
             st.success("### ✅ BUY")
             display_signal_box(df[df['Signal'] == "✅ BUY"])
-
         with col2:
             st.info("### 🚀 SMART")
             display_signal_box(df[df['Signal'] == "🚀 SMART"])
-
         with col3:
             st.error("### ⚠️ EXIT")
             display_signal_box(df[df['Signal'] == "⚠️ EXIT"])
-
         with col4:
             st.warning("### ⏳ WAIT")
             display_signal_box(df[df['Signal'] == "⏳ WAIT"])
+
+        # പുതിയ ഫീച്ചർ: താഴെ ഭാഗത്ത് വിശദമായ ലിസ്റ്റ് (Detailed Table)
+        st.markdown("---")
+        st.subheader("📋 Detailed Scanned List")
+        
+        # സിഗ്നൽ അനുസരിച്ച് കളർ നൽകാൻ
+        def apply_color(val):
+            color = 'white'
+            if val == "✅ BUY": color = '#28a745'
+            elif val == "🚀 SMART": color = '#007bff'
+            elif val == "⚠️ EXIT": color = '#dc3545'
+            elif val == "⏳ WAIT": color = '#ffc107'
+            return f'color: {color}; font-weight: bold'
+
+        # ലിസ്റ്റ് കാണിക്കുന്നു
+        styled_df = df.style.map(apply_color, subset=['Signal'])
+        st.dataframe(styled_df, use_container_width=True, hide_index=True)
+        
     else:
-        st.warning("Data download failed or no stocks found.")
+        st.warning("ഡാറ്റ ലഭ്യമായില്ല.")
 
 if __name__ == "__main__":
     main()
